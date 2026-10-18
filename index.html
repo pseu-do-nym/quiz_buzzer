@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>クイズ早押し</title>
   <link rel="stylesheet" href="css/style.css">
+
+  <!-- Supabase JavaScript SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <!-- アプリ本体 -->
+  <script src="js/supabase-config.js" defer></script>
   <script src="js/game.js" defer></script>
   <script src="js/audio.js" defer></script>
   <script src="js/main.js" defer></script>
@@ -12,11 +18,12 @@
 <body>
   <header class="topbar">
     <h1>クイズ早押し</h1>
+
     <div class="identity">
-      <label for="username">現在の操作ユーザー</label>
+      <label for="username">プレイヤー名</label>
       <input id="username" type="text" maxlength="20" value="プレイヤー1">
-      <span class="hint">※試作品では名前を切り替えて複数人の動作を試せます</span>
     </div>
+
     <details class="settings">
       <summary>設定</summary>
       <div class="settings-panel">
@@ -32,21 +39,80 @@
         <label>不正解音
           <select data-sound-select="incorrect"></select>
         </label>
-        <button id="reset-all" class="danger-button" type="button">ゲーム全体を初期化</button>
-        <p class="hint">初期化すると得点・履歴・出題状態が消えます。名前と音の選択は維持します。</p>
+        <label>リセット音
+        <select data-sound-select="reset"></select>
+        </label>
+
+        <button id="reset-all" class="danger-button" type="button" disabled>
+          ゲーム全体を初期化
+        </button>
+        <p class="hint">
+          初期化すると得点・履歴・出題状態が消えます。
+          ルームの参加者は維持されます。
+        </p>
       </div>
     </details>
   </header>
 
   <main>
+    <section class="panel room-panel" aria-label="ルーム設定">
+      <h2>ルーム</h2>
+
+      <p id="connection-status" role="status">
+        Supabaseに接続しています……
+      </p>
+
+      <div class="room-actions">
+        <button id="create-room-button" class="control-button" type="button" disabled>
+          ルームを作成
+        </button>
+
+        <label for="room-code-input">参加コード</label>
+        <input
+          id="room-code-input"
+          type="text"
+          maxlength="6"
+          placeholder="6桁のコード"
+          autocomplete="off"
+        >
+
+        <button id="join-room-button" class="control-button" type="button" disabled>
+          ルームに参加
+        </button>
+
+        <button id="leave-room-button" class="control-button leave-room-button" type="button" disabled>
+          退室
+        </button>
+      </div>
+
+      <p id="room-status" role="status">
+        ルームを作成するか、参加コードを入力してください。
+      </p>
+
+      <div id="room-info" hidden>
+        <p>ルームコード：<strong id="room-code-display"></strong></p>
+        <h3>参加者</h3>
+        <ul id="member-list">
+          <li class="empty-state">読み込み中</li>
+        </ul>
+      </div>
+    </section>
+
     <section class="game-area" aria-label="早押しエリア">
-      <p id="game-status" class="status" role="status">出題可能です。出題ボタンを押してください。</p>
+      <p id="game-status" class="status" role="status">
+        ルームに参加してください。
+      </p>
+
       <p id="host-label" class="host-label">出題者：未設定</p>
+
       <button id="buzzer-button" class="buzzer" type="button" disabled>
         <span>早押し</span>
         <small>ANSWER</small>
       </button>
-      <p id="buzzer-message" class="buzzer-message">出題開始後に回答できます</p>
+
+      <p id="buzzer-message" class="buzzer-message">
+        ルーム参加後、出題開始を待ってください
+      </p>
     </section>
 
     <section class="lower-layout">
@@ -66,13 +132,38 @@
     </section>
 
     <section class="host-controls" aria-label="出題者用操作">
-      <button id="question-button" class="control-button question-button" type="button">出題</button>
-      <button id="correct-button" class="control-button correct-button" type="button" disabled>正解</button>
-      <button id="incorrect-button" class="control-button incorrect-button" type="button" disabled>不正解</button>
-      <button id="reset-question-button" class="control-button reset-button" type="button" disabled>問題リセット</button>
+      <button
+        id="question-button"
+        class="control-button question-button"
+        type="button"
+        disabled
+      >出題</button>
+
+      <button
+        id="correct-button"
+        class="control-button correct-button"
+        type="button"
+        disabled
+      >正解</button>
+
+      <button
+        id="incorrect-button"
+        class="control-button incorrect-button"
+        type="button"
+        disabled
+      >不正解</button>
+
+      <button
+        id="reset-question-button"
+        class="control-button reset-button"
+        type="button"
+        disabled
+      >問題リセット</button>
     </section>
+
     <p class="footer-note">
-      試作品：このブラウザ内だけで動作します。複数端末間の同期はまだ実装していません。
+      Supabaseを利用して複数端末で状態を同期します。
+      効果音の選択は端末ごとに保存されます。
     </p>
   </main>
 
@@ -81,7 +172,30 @@
       <p>ゲーム全体を初期化します。得点・履歴・出題状態がすべて消えます。</p>
       <div class="dialog-actions">
         <button value="cancel" class="control-button">キャンセル</button>
-        <button id="confirm-reset" value="confirm" class="control-button danger-button">初期化する</button>
+        <button
+          id="confirm-reset"
+          value="confirm"
+          class="control-button danger-button"
+        >初期化する</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="create-room-dialog">
+    <form method="dialog">
+      <p>新しいルームを作成しますか？</p>
+      <p class="hint">
+        作成後に参加コードが発行されます。
+      </p>
+      <div class="dialog-actions">
+        <button value="cancel" class="control-button cancel-button">
+          キャンセル
+        </button>
+        <button
+          id="confirm-create-room"
+          value="confirm"
+          class="control-button create-confirm-button"
+        >作成する</button>
       </div>
     </form>
   </dialog>

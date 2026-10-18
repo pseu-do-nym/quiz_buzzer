@@ -12,6 +12,10 @@ const SOUND_LIST = {
   ],
   incorrect: [
     { name: "標準", file: "sounds/incorrect/default.wav" }
+  ],
+  reset: [
+    { name: "標準", file: "sounds/reset/default.wav" },
+    { name: "無音", file: null }
   ]
 };
 
@@ -19,7 +23,8 @@ const audioSettings = {
   buzzer: 0,
   question: 0,
   correct: 0,
-  incorrect: 0
+  incorrect: 0,
+  reset: 0
 };
 
 function populateSoundSelectors() {

@@ -332,13 +332,21 @@ joinRoomButton.addEventListener("click", async () => {
 
     if (error) throw error;
 
-    const roomId = data;
+    // ★ JSONBオブジェクト形式のレスポンスを処理する
+    const res = data;
+    if (!res || !res.ok) {
+      throw new Error(res?.message || "参加に失敗しました。");
+    }
 
+    const roomId = res.room_id;
     if (typeof roomId !== "string" || !roomId) {
       throw new Error("参加結果を読み取れませんでした。");
     }
 
-    usernameInput.value = name;
+    // 自動で枝番（例: 「 (2)」）が振られた場合は入力欄の名前も更新する
+    if (res.assigned_name) {
+      usernameInput.value = res.assigned_name;
+    }
 
     await activateRoom(roomId, code);
 
@@ -368,6 +376,8 @@ async function activateRoom(roomId, roomCode) {
   $("#room-info").hidden = false;
   $("#room-code-display").textContent = currentRoomCode;
 
+  playFixedSound("entry");
+
   startRealtime();
   await refreshRoom();
 }
@@ -383,6 +393,8 @@ leaveRoomButton.addEventListener("click", async () => {
   leaveRoomButton.disabled = true;
 
   try {
+    playFixedSound("exit");
+    
     const { data, error } = await supabaseClient.rpc(
       "quiz_leave_room",
       { p_room_id: roomId }
@@ -670,15 +682,25 @@ function handleSnapshotTransitions(previous, next) {
 
   for (const [userId, name] of newMembers) {
     if (!oldMembers.has(userId)) {
+      // ★ 自分自身が参加した場合、または他の人が参加した場合
       playFixedSound("entry");
-      showGlobalEventMessage(`${name}さんが参加しました。`);
+      if (userId === currentUserId) {
+        showGlobalEventMessage("ルームに参加しました。");
+      } else {
+        showGlobalEventMessage(`${name}さんが参加しました。`);
+      }
     }
   }
 
   for (const [userId, name] of oldMembers) {
     if (!newMembers.has(userId)) {
+      // ★ 自分自身が退室した場合、または他の人が退室した場合
       playFixedSound("exit");
-      showGlobalEventMessage(`${name}さんが退室しました。`);
+      if (userId === currentUserId) {
+        showGlobalEventMessage("ルームから退出しました。");
+      } else {
+        showGlobalEventMessage(`${name}さんが退室しました。`);
+      }
     }
   }
 

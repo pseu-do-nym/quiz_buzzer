@@ -21,7 +21,7 @@
 
     <div class="identity">
       <label for="username">プレイヤー名</label>
-      <input id="username" type="text" maxlength="20" value="プレイヤー1">
+      <input id="username" type="text" maxlength="20">
     </div>
 
     <details class="settings">
@@ -42,14 +42,6 @@
         <label>リセット音
         <select data-sound-select="reset"></select>
         </label>
-
-        <button id="reset-all" class="danger-button" type="button" disabled>
-          ゲーム全体を初期化
-        </button>
-        <p class="hint">
-          初期化すると得点・履歴・出題状態が消えます。
-          ルームの参加者は維持されます。
-        </p>
       </div>
     </details>
   </header>
@@ -103,7 +95,12 @@
         ルームに参加してください。
       </p>
 
+      <p id="global-event-message" class="global-event-message" role="status" hidden></p>
+
       <p id="host-label" class="host-label">出題者：未設定</p>
+      <p id="question-number" class="question-number" hidden></p>
+      <p id="timer-display" class="timer-display">0.0秒</p>
+      <p id="game-finished-message" class="game-finished-message" hidden></p>
 
       <button id="buzzer-button" class="buzzer" type="button" disabled>
         <span>早押し</span>
@@ -125,12 +122,13 @@
 
       <section class="panel score-panel">
         <h2>得点ランキング</h2>
-        <ol id="score-list" class="score-list">
+        <ul id="score-list" class="score-list">
           <li class="empty-state">得点はまだありません</li>
-        </ol>
+        </ul>
       </section>
     </section>
 
+    <!-- 出題者用操作 -->
     <section class="host-controls" aria-label="出題者用操作">
       <button
         id="question-button"
@@ -161,6 +159,77 @@
       >問題リセット</button>
     </section>
 
+    <!-- 得点修正パネル（枠で囲み、ボタンを見やすく調整） -->
+    <section id="score-adjustment-panel" class="panel score-adjustment-panel" aria-label="得点修正" hidden>
+      <h2>得点修正</h2>
+
+      <div class="settings-grid">
+        <label>
+          対象プレイヤー
+          <select id="score-target"></select>
+        </label>
+
+        <label>
+          増減する得点
+          <input id="score-delta" type="number" step="1" value="1">
+        </label>
+      </div>
+
+      <button id="apply-score-adjustment" class="control-button action-button" type="button">
+        得点を変更
+      </button>
+    </section>
+
+  <!-- ゲーム設定パネル -->
+    <section id="game-settings-panel" class="panel game-settings-panel" hidden>
+      <h2>ゲーム設定</h2>
+
+      <div class="settings-grid">
+        <label>
+          正解時の得点
+          <input id="correct-points" type="number" min="0" step="1" value="1">
+        </label>
+
+        <label>
+          不正解時の得点（加算値）
+          <input id="incorrect-points" type="number" step="1" value="0" placeholder="例：-1">
+        </label>
+
+        <label>
+          最大出題数（空欄＝無制限）
+          <input id="max-questions" type="number" min="1" step="1" placeholder="無制限">
+        </label>
+
+        <label>
+          最大得点（空欄＝無制限）
+          <input id="max-score" type="number" min="1" step="1" placeholder="無制限">
+        </label>
+      </div>
+
+      <label class="inline-setting">
+        <input id="allow-negative-scores" type="checkbox">
+        0点以下を許可
+      </label>
+
+      <label class="inline-setting">
+        <input id="show-question-number" type="checkbox">
+        出題数を表示
+      </label>
+
+      <button id="save-game-settings" class="control-button action-button" type="button">
+        設定を保存
+      </button>
+
+      <div class="settings-reset-section" style="margin-top: 20px; border-top: 1px solid #edf0f4; padding-top: 16px;">
+        <button id="reset-all" class="danger-button" type="button" disabled>
+          ゲーム全体を初期化
+        </button>
+        <p class="hint" style="margin-top: 6px;">
+          初期化すると得点・履歴・出題状態が消えます。ルームの参加者は維持されます。
+        </p>
+      </div>
+    </section>
+
     <p class="footer-note">
       Supabaseを利用して複数端末で状態を同期します。
       効果音の選択は端末ごとに保存されます。
@@ -183,10 +252,19 @@
 
   <dialog id="create-room-dialog">
     <form method="dialog">
-      <p>新しいルームを作成しますか？</p>
+      <p>新しいルームを作成します。</p>
+
+      <label for="room-mode">出題・管理方式</label>
+      <select id="room-mode">
+        <option value="single_setter">作成者のみ出題・管理</option>
+        <option value="everyone" selected>全員が出題・設定変更可能</option>
+      </select>
+
       <p class="hint">
-        作成後に参加コードが発行されます。
+        「作成者のみ」の場合、出題や得点・ゲーム設定の変更はルーム作成者に限定されます。
+        「全員」の場合、出題中でなければ参加者が得点・ゲーム設定を変更できます。
       </p>
+
       <div class="dialog-actions">
         <button value="cancel" class="control-button cancel-button">
           キャンセル

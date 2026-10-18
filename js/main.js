@@ -17,17 +17,42 @@ const joinRoomButton = $("#join-room-button");
 const leaveRoomButton = $("#leave-room-button");
 const roomCodeInput = $("#room-code-input");
 
+const roomModeSelect = $("#room-mode");
+const questionNumberDisplay = $("#question-number");
+const timerDisplay = $("#timer-display");
+const gameFinishedMessage = $("#game-finished-message");
+const globalEventMessage = $("#global-event-message");
+
+const gameSettingsPanel = $("#game-settings-panel");
+
+const correctPointsInput = $("#correct-points");
+const incorrectPointsInput = $("#incorrect-points");
+const allowNegativeScoresInput = $("#allow-negative-scores");
+
+const maxQuestionsInput = $("#max-questions");
+const maxScoreInput = $("#max-score");
+const showQuestionNumberInput = $("#show-question-number");
+const saveGameSettingsButton = $("#save-game-settings");
+
+const scoreAdjustmentPanel = $("#score-adjustment-panel");
+const scoreTargetSelect = $("#score-target");
+const scoreDeltaInput = $("#score-delta");
+const applyScoreAdjustmentButton = $("#apply-score-adjustment");
+
 let supabaseClient = null;
 let currentUserId = null;
 let authReady = false;
 
-let currentRoomId = localStorage.getItem("quiz-buzzer-room-id");
-let currentRoomCode = localStorage.getItem("quiz-buzzer-room-code") || "";
+let currentRoomId =
+  localStorage.getItem("quiz-buzzer-room-id");
+let currentRoomCode =
+  localStorage.getItem("quiz-buzzer-room-code") || "";
 
 let currentSnapshot = null;
 let realtimeChannel = null;
 let refreshRunning = false;
 let refreshPending = false;
+let timerIntervalId = null;
 
 populateSoundSelectors();
 render();
@@ -48,10 +73,95 @@ function showConnectionMessage(message) {
   $("#connection-status").textContent = message;
 }
 
+function showGlobalEventMessage(message) {
+  if (!globalEventMessage) return;
+
+  globalEventMessage.textContent = message || "";
+  globalEventMessage.hidden = !message;
+}
+
 function setBusy(busy) {
-  createRoomButton.disabled = busy || !authReady || Boolean(currentRoomId);
-  joinRoomButton.disabled = busy || !authReady || Boolean(currentRoomId);
-  leaveRoomButton.disabled = busy || !currentRoomId;
+  createRoomButton.disabled =
+    busy || !authReady || Boolean(currentRoomId);
+
+  joinRoomButton.disabled =
+    busy || !authReady || Boolean(currentRoomId);
+
+  leaveRoomButton.disabled =
+    busy || !currentRoomId;
+}
+
+// --------------------------------------------------
+// 権限・状態判定
+// --------------------------------------------------
+
+function getCurrentMember(snapshot = currentSnapshot) {
+  if (!snapshot || !currentUserId) return null;
+
+  return snapshot.members.find(
+    member => member.user_id === currentUserId
+  ) || null;
+}
+
+function isRoomCreator(snapshot = currentSnapshot) {
+  return Boolean(
+    snapshot &&
+    currentUserId &&
+    snapshot.room.created_by === currentUserId
+  );
+}
+
+function isSingleSetter(snapshot = currentSnapshot) {
+  return snapshot?.room.mode === "single_setter";
+}
+
+function canManageGame(snapshot = currentSnapshot) {
+  if (!snapshot || !getCurrentMember(snapshot)) return false;
+
+  return isSingleSetter(snapshot)
+    ? isRoomCreator(snapshot)
+    : true;
+}
+
+function canJudge(snapshot = currentSnapshot) {
+  if (!snapshot || !getCurrentMember(snapshot)) return false;
+
+  return isSingleSetter(snapshot)
+    ? isRoomCreator(snapshot)
+    : snapshot.state.host_user_id === currentUserId;
+}
+
+function getElapsedMilliseconds(state) {
+  if (!state) return 0;
+
+  const accumulated = Math.max(
+    0,
+    Number(state.elapsed_ms) || 0
+  );
+
+  if (!state.timer_resumed_at) {
+    return accumulated;
+  }
+
+  const resumedAt = new Date(
+    state.timer_resumed_at
+  ).getTime();
+
+  if (!Number.isFinite(resumedAt)) {
+    return accumulated;
+  }
+
+  return accumulated + Math.max(0, Date.now() - resumedAt);
+}
+
+function getHighestScore(scores) {
+  return scores.reduce(
+    (highest, entry) => Math.max(
+      highest,
+      Number(entry.score) || 0
+    ),
+    0
+  );
 }
 
 // --------------------------------------------------
@@ -104,14 +214,18 @@ async function initialize() {
     setBusy(false);
 
     if (currentRoomId) {
-      $("#room-code-input").value = currentRoomCode;
+      roomCodeInput.value = currentRoomCode;
       $("#room-info").hidden = false;
       usernameInput.disabled = true;
+
       showRoomMessage("保存されたルームに再接続しています……");
+
       startRealtime();
       await refreshRoom();
     } else {
-      showRoomMessage("ルームを作成するか、参加コードを入力してください。");
+      showRoomMessage(
+        "ルームを作成するか、参加コードを入力してください。"
+      );
       render();
     }
   } catch (error) {
@@ -135,11 +249,15 @@ createRoomButton.addEventListener("click", () => {
   }
 });
 
-confirmCreateRoomButton.addEventListener("click", async event => {
-  event.preventDefault();
-  createRoomDialog.close();
-  await createRoom();
-});
+confirmCreateRoomButton.addEventListener(
+  "click",
+  async event => {
+    event.preventDefault();
+
+    createRoomDialog.close();
+    await createRoom();
+  }
+);
 
 async function createRoom() {
   if (!authReady || currentRoomId) return;
@@ -148,10 +266,14 @@ async function createRoom() {
 
   try {
     const name = currentUserName();
+    const mode = roomModeSelect?.value || "everyone";
 
     const { data, error } = await supabaseClient.rpc(
       "quiz_create_room",
-      { p_name: name }
+      {
+        p_name: name,
+        p_mode: mode
+      }
     );
 
     if (error) throw error;
@@ -159,7 +281,9 @@ async function createRoom() {
     const room = Array.isArray(data) ? data[0] : data;
 
     if (!room?.created_room_id || !room?.created_room_code) {
-      throw new Error("ルーム作成結果を読み取れませんでした。");
+      throw new Error(
+        "ルーム作成結果を読み取れませんでした。"
+      );
     }
 
     usernameInput.value = name;
@@ -187,7 +311,9 @@ joinRoomButton.addEventListener("click", async () => {
   const code = roomCodeInput.value.trim().toUpperCase();
 
   if (!/^[A-Z0-9]{6}$/.test(code)) {
-    showRoomMessage("参加コードは半角英数字6文字で入力してください。");
+    showRoomMessage(
+      "参加コードは半角英数字6文字で入力してください。"
+    );
     return;
   }
 
@@ -206,7 +332,6 @@ joinRoomButton.addEventListener("click", async () => {
 
     if (error) throw error;
 
-    // このRPCはルームID（UUID）を返す想定。
     const roomId = data;
 
     if (typeof roomId !== "string" || !roomId) {
@@ -239,6 +364,7 @@ async function activateRoom(roomId, roomCode) {
 
   roomCodeInput.value = currentRoomCode;
   usernameInput.disabled = true;
+
   $("#room-info").hidden = false;
   $("#room-code-display").textContent = currentRoomCode;
 
@@ -264,8 +390,14 @@ leaveRoomButton.addEventListener("click", async () => {
 
     if (error) throw error;
 
-    if (data && typeof data === "object" && data.ok === false) {
-      throw new Error(data.message || "退室できませんでした。");
+    if (
+      data &&
+      typeof data === "object" &&
+      data.ok === false
+    ) {
+      throw new Error(
+        data.message || "退室できませんでした。"
+      );
     }
 
     await stopRealtime();
@@ -280,7 +412,10 @@ leaveRoomButton.addEventListener("click", async () => {
     usernameInput.disabled = false;
     $("#room-info").hidden = true;
 
-    showRoomMessage("退室しました。ルームは削除されていません。");
+    showGlobalEventMessage("");
+    showRoomMessage(
+      "退室しました。ルームは削除されていません。"
+    );
     showMessage("ルームに参加してください。");
 
     render();
@@ -307,7 +442,6 @@ async function stopRealtime() {
 function startRealtime() {
   if (!supabaseClient || !currentRoomId) return;
 
-  // 同じルームへの重複購読を防ぐ。
   if (realtimeChannel) {
     supabaseClient.removeChannel(realtimeChannel);
     realtimeChannel = null;
@@ -369,7 +503,9 @@ function startRealtime() {
     )
     .subscribe(status => {
       if (status === "SUBSCRIBED") {
-        showConnectionMessage("Supabase接続済み・リアルタイム同期中");
+        showConnectionMessage(
+          "Supabase接続済み・リアルタイム同期中"
+        );
       } else if (
         status === "CHANNEL_ERROR" ||
         status === "TIMED_OUT"
@@ -402,7 +538,9 @@ async function refreshRoom() {
     } while (refreshPending && currentRoomId);
   } catch (error) {
     console.error("状態更新エラー:", error);
-    showRoomMessage(`状態の取得に失敗しました：${error.message}`);
+    showRoomMessage(
+      `状態の取得に失敗しました：${error.message}`
+    );
   } finally {
     refreshRunning = false;
   }
@@ -420,7 +558,7 @@ async function refreshRoomOnce() {
   ] = await Promise.all([
     supabaseClient
       .from("quiz_rooms")
-      .select("id, room_code, created_by")
+      .select("id, room_code, created_by, mode")
       .eq("id", roomId)
       .maybeSingle(),
 
@@ -459,8 +597,6 @@ async function refreshRoomOnce() {
     if (result.error) throw result.error;
   }
 
-  // 保存されたルームが存在しない、または現在の匿名ユーザーが
-  // 参加者ではない場合、別の認証ユーザーとして再参加する必要がある。
   if (!roomResult.data || !stateResult.data) {
     await stopRealtime();
 
@@ -490,22 +626,18 @@ async function refreshRoomOnce() {
     scores: scoresResult.data || []
   };
 
-  // 初回取得では効果音を鳴らさない。
-  // 2回目以降は、他端末からの状態変化も検出して再生する。
   const previousSnapshot = currentSnapshot;
 
   if (previousSnapshot && currentRoomId === roomId) {
-    playTransitionSounds(previousSnapshot, snapshot);
+    handleSnapshotTransitions(previousSnapshot, snapshot);
   }
 
-  updateGameStatus(
-    currentRoomId === roomId ? previousSnapshot : null,
-    snapshot
-  );
+  updateGameStatus(previousSnapshot, snapshot);
 
   currentSnapshot = snapshot;
 
   currentRoomCode = snapshot.room.room_code;
+
   $("#room-code-display").textContent = currentRoomCode;
   localStorage.setItem("quiz-buzzer-room-code", currentRoomCode);
 
@@ -513,11 +645,60 @@ async function refreshRoomOnce() {
   render();
 }
 
-function playTransitionSounds(previous, next) {
+// --------------------------------------------------
+// 状態変化・効果音・全員向け通知
+// --------------------------------------------------
+
+function handleSnapshotTransitions(previous, next) {
   const oldState = previous.state;
   const newState = next.state;
 
-  // 新しい問題が開始された。
+  // 入退室を検出する。
+  const oldMembers = new Map(
+    previous.members.map(member => [
+      member.user_id,
+      member.display_name
+    ])
+  );
+
+  const newMembers = new Map(
+    next.members.map(member => [
+      member.user_id,
+      member.display_name
+    ])
+  );
+
+  for (const [userId, name] of newMembers) {
+    if (!oldMembers.has(userId)) {
+      playFixedSound("entry");
+      showGlobalEventMessage(`${name}さんが参加しました。`);
+    }
+  }
+
+  for (const [userId, name] of oldMembers) {
+    if (!newMembers.has(userId)) {
+      playFixedSound("exit");
+      showGlobalEventMessage(`${name}さんが退室しました。`);
+    }
+  }
+
+  // 設定変更・得点修正を検出する。
+  if (
+    Number(newState.last_event_id) !==
+      Number(oldState.last_event_id) &&
+    newState.last_event_message
+  ) {
+    const eventType = String(
+      newState.last_event_type || ""
+    );
+
+    if (/setting|config|score|adjust/i.test(eventType)) {
+      playFixedSound("config");
+      showGlobalEventMessage(newState.last_event_message);
+    }
+  }
+
+  // 新しい問題の開始。
   if (
     newState.phase === "active" &&
     (
@@ -528,7 +709,7 @@ function playTransitionSounds(previous, next) {
     playSound("question");
   }
 
-  // 回答者が新しく確定した。
+  // 新しい回答者。
   if (
     newState.current_answer_id &&
     oldState.current_answer_id !== newState.current_answer_id
@@ -536,7 +717,7 @@ function playTransitionSounds(previous, next) {
     playSound("buzzer");
   }
 
-  // 進行中の問題がリセットされ、待機状態に戻った。
+  // 問題のリセット。
   if (
     oldState.phase === "active" &&
     newState.phase === "ready" &&
@@ -545,7 +726,20 @@ function playTransitionSounds(previous, next) {
     playSound("reset");
   }
 
-  // pending から正解・不正解に変化した履歴を検出する。
+  // 正解者なしで問題が終了した場合（かつ、直近の履歴が正解になっていない場合）
+  if (
+    oldState.phase === "active" &&
+    newState.phase === "ended" &&
+    !newState.current_answer_id
+  ) {
+    const latestHistory = next.history[0];
+    // 直近の履歴が正解（correct）でなければ「正解者なし」とみなして不正解音を鳴らす
+    if (!latestHistory || latestHistory.result !== "correct") {
+      playSound("incorrect");
+    }
+  }
+
+  // 回答の判定。
   const oldResults = new Map(
     previous.history.map(item => [item.id, item.result])
   );
@@ -553,7 +747,10 @@ function playTransitionSounds(previous, next) {
   for (const item of next.history) {
     const oldResult = oldResults.get(item.id);
 
-    if (oldResult === "pending" && item.result === "correct") {
+    if (
+      oldResult === "pending" &&
+      item.result === "correct"
+    ) {
       playSound("correct");
     } else if (
       oldResult === "pending" &&
@@ -564,17 +761,26 @@ function playTransitionSounds(previous, next) {
   }
 }
 
-
 function updateGameStatus(previous, next) {
   const state = next.state;
   const history = next.history;
 
-  // 初回接続・ブラウザ更新後は、現在の状態を表示する。
+  if (state.game_finished) {
+    showMessage(
+      state.game_end_message || "ゲーム終了です。"
+    );
+    return;
+  }
+
   if (!previous) {
     if (state.phase === "ready") {
-      showMessage("ルームに参加しました。出題開始待ちです。");
+      showMessage(
+        "ルームに参加しました。出題開始待ちです。"
+      );
     } else if (state.phase === "ended") {
-      showMessage("問題終了。出題者は次の問題を開始できます。");
+      showMessage(
+        "問題終了。次の問題を開始できます。"
+      );
     } else if (state.current_answer_id) {
       const answer = history.find(
         item => item.id === state.current_answer_id
@@ -594,7 +800,6 @@ function updateGameStatus(previous, next) {
 
   const oldState = previous.state;
 
-  // 正解・不正解の判定を検出する。
   const oldResults = new Map(
     previous.history.map(item => [item.id, item.result])
   );
@@ -602,18 +807,37 @@ function updateGameStatus(previous, next) {
   for (const item of history) {
     const oldResult = oldResults.get(item.id);
 
-    if (oldResult === "pending" && item.result === "correct") {
-      showMessage(`${item.display_name}さんの回答は正解です。問題終了。`);
+    if (
+      oldResult === "pending" &&
+      item.result === "correct"
+    ) {
+      showMessage(
+        `${item.display_name}さんの回答は正解です。問題終了。`
+      );
       return;
     }
 
-    if (oldResult === "pending" && item.result === "incorrect") {
-      showMessage(`${item.display_name}さんの回答は不正解です。次の回答を受け付けています。`);
+    if (
+      oldResult === "pending" &&
+      item.result === "incorrect"
+    ) {
+      showMessage(
+        `${item.display_name}さんの回答は不正解です。次の回答を受け付けています。`
+      );
       return;
     }
   }
 
-  // 出題開始を検出する。
+  // 正解者なしで問題が終了した場合。
+  if (
+    oldState.phase === "active" &&
+    state.phase === "ended" &&
+    !state.current_answer_id
+  ) {
+    showMessage("正解者なし。問題終了です。");
+    return;
+  }
+
   if (
     state.phase === "active" &&
     (
@@ -631,7 +855,6 @@ function updateGameStatus(previous, next) {
     return;
   }
 
-  // 新しい回答者を検出する。
   if (
     state.current_answer_id &&
     oldState.current_answer_id !== state.current_answer_id
@@ -648,7 +871,6 @@ function updateGameStatus(previous, next) {
     return;
   }
 
-  // 問題のリセットを検出する。
   if (
     oldState.phase === "active" &&
     state.phase === "ready" &&
@@ -659,11 +881,15 @@ function updateGameStatus(previous, next) {
 }
 
 // --------------------------------------------------
-// ゲーム操作
+// RPC共通処理
 // --------------------------------------------------
 
-async function callGameRpc(functionName, args, fallbackMessage) {
-  if (!currentRoomId) {
+async function callGameRpc(
+  functionName,
+  args,
+  fallbackMessage
+) {
+  if (!currentRoomId || !supabaseClient) {
     showMessage("先にルームへ参加してください。");
     return false;
   }
@@ -676,12 +902,20 @@ async function callGameRpc(functionName, args, fallbackMessage) {
 
     if (error) throw error;
 
-    if (data && typeof data === "object" && data.ok === false) {
-      throw new Error(data.message || "操作できませんでした。");
+    if (
+      data &&
+      typeof data === "object" &&
+      data.ok === false
+    ) {
+      throw new Error(
+        data.message || "操作できませんでした。"
+      );
     }
 
     const message =
-      data && typeof data === "object" && data.message
+      data &&
+      typeof data === "object" &&
+      data.message
         ? data.message
         : fallbackMessage;
 
@@ -697,6 +931,10 @@ async function callGameRpc(functionName, args, fallbackMessage) {
   }
 }
 
+// --------------------------------------------------
+// 早押し・出題・判定・リセット
+// --------------------------------------------------
+
 buzzerButton.addEventListener("click", async () => {
   buzzerButton.disabled = true;
 
@@ -710,15 +948,11 @@ buzzerButton.addEventListener("click", async () => {
 questionButton.addEventListener("click", async () => {
   questionButton.disabled = true;
 
-  const ok = await callGameRpc(
+  await callGameRpc(
     "quiz_start_question",
     { p_room_id: currentRoomId },
     `${currentUserName()}さんが出題しました。`
   );
-
-  if (ok) {
-    window.setTimeout(render, GAME_CONFIG.resetTimeoutMs + 100);
-  }
 });
 
 correctButton.addEventListener("click", async () => {
@@ -737,13 +971,20 @@ correctButton.addEventListener("click", async () => {
 incorrectButton.addEventListener("click", async () => {
   incorrectButton.disabled = true;
 
+  const noAnswer =
+    currentSnapshot?.state.phase === "active" &&
+    !currentSnapshot.state.current_answer_id;
+
+  // 正解者なし、または不正解の判定を送信
   await callGameRpc(
     "quiz_judge_answer",
     {
       p_room_id: currentRoomId,
       p_result: "incorrect"
     },
-    "不正解として判定しました。"
+    noAnswer
+      ? "正解者なし。問題終了です。"
+      : "不正解として判定しました。"
   );
 });
 
@@ -761,6 +1002,7 @@ resetQuestionButton.addEventListener("click", async () => {
 
     status.textContent =
       "問題をリセットしました。得点は維持されています。";
+
     status.classList.add("reset-notice");
 
     window.setTimeout(() => {
@@ -777,11 +1019,14 @@ resetAllButton.addEventListener("click", () => {
   }
 });
 
-confirmResetButton.addEventListener("click", async event => {
-  event.preventDefault();
-  resetDialog.close();
-  await resetAll();
-});
+confirmResetButton.addEventListener(
+  "click",
+  async event => {
+    event.preventDefault();
+    resetDialog.close();
+    await resetAll();
+  }
+);
 
 async function resetAll() {
   await callGameRpc(
@@ -792,11 +1037,170 @@ async function resetAll() {
 }
 
 // --------------------------------------------------
+// ゲーム設定
+// --------------------------------------------------
+
+saveGameSettingsButton.addEventListener(
+  "click",
+  async () => {
+    const snapshot = currentSnapshot;
+
+    if (!snapshot || !canManageGame(snapshot)) {
+      showMessage("ゲーム設定を変更する権限がありません。");
+      return;
+    }
+
+    const correctPoints = Number(correctPointsInput.value);
+    const incorrectPoints = Number(incorrectPointsInput.value);
+    const allowNegativeScores = allowNegativeScoresInput.checked;
+
+    const maxQuestions = maxQuestionsInput.value.trim() === ""
+      ? null
+      : Number(maxQuestionsInput.value);
+
+    const maxScore = maxScoreInput.value.trim() === ""
+      ? null
+      : Number(maxScoreInput.value);
+
+    const showQuestionNumber =
+      showQuestionNumberInput.checked;
+
+    if (!Number.isInteger(correctPoints) || correctPoints < 0) {
+      showMessage("正解時の得点は0以上の整数にしてください。");
+      return;
+    }
+
+    if (!Number.isInteger(incorrectPoints)) {
+      showMessage("不正解時の得点は整数で入力してください（減点の場合は負の値）。");
+      return;
+    }
+
+    if (
+      maxQuestions !== null &&
+      (!Number.isInteger(maxQuestions) || maxQuestions < 1)
+    ) {
+      showMessage("最大出題数は1以上の整数にしてください。");
+      return;
+    }
+
+    if (
+      maxScore !== null &&
+      (!Number.isInteger(maxScore) || maxScore < 1)
+    ) {
+      showMessage("最大得点は1以上の整数にしてください。");
+      return;
+    }
+
+    if (
+      maxQuestions !== null &&
+      maxQuestions < Number(snapshot.state.question_count)
+    ) {
+      showMessage(
+        `最大出題数は現在の出題数（${snapshot.state.question_count}問）以上にしてください。`
+      );
+      return;
+    }
+
+    const highestScore = getHighestScore(snapshot.scores);
+
+    if (maxScore !== null && maxScore < highestScore) {
+      showMessage(
+        `最大得点は現在の最高得点（${highestScore}点）以上にしてください。`
+      );
+      return;
+    }
+
+    saveGameSettingsButton.disabled = true;
+
+    await callGameRpc(
+      "quiz_update_settings",
+      {
+        p_room_id: currentRoomId,
+        p_correct_points: correctPoints,
+        p_incorrect_points: incorrectPoints,
+        p_allow_negative_scores: allowNegativeScores,
+        p_max_questions: maxQuestions,
+        p_max_score: maxScore,
+        p_show_question_number: showQuestionNumber
+      },
+      "ゲーム設定を更新しました。"
+    );
+
+    render();
+  }
+);
+
+// --------------------------------------------------
+// 得点の手動修正
+// --------------------------------------------------
+
+applyScoreAdjustmentButton.addEventListener(
+  "click",
+  async () => {
+    const snapshot = currentSnapshot;
+
+    if (!snapshot || !canManageGame(snapshot)) {
+      showMessage("得点を変更する権限がありません。");
+      return;
+    }
+
+    if (snapshot.state.phase === "active") {
+      showMessage("出題中は得点を変更できません。");
+      return;
+    }
+
+    const targetUserId = scoreTargetSelect.value;
+    const delta = Number(scoreDeltaInput.value);
+
+    if (!targetUserId) {
+      showMessage("得点を変更するプレイヤーを選択してください。");
+      return;
+    }
+
+    if (!Number.isInteger(delta) || delta === 0) {
+      showMessage("増減する得点は0以外の整数にしてください。");
+      return;
+    }
+
+    // 「出題者固定」モードで出題者自身を変更しようとしていないかチェック
+    if (
+      snapshot.room.mode === "single_setter" &&
+      targetUserId === snapshot.room.created_by
+    ) {
+      showMessage("出題者の得点は変更できません。");
+      return;
+    }
+
+    // 対象プレイヤー表示名の取得（membersまたはscoresから取得）
+    const targetInMembers = snapshot.members?.find(m => m.user_id === targetUserId);
+    const targetInScores = snapshot.scores?.find(s => s.user_id === targetUserId);
+    const displayName = targetInMembers?.display_name || targetInScores?.display_name || "プレイヤー";
+
+    applyScoreAdjustmentButton.disabled = true;
+
+    await callGameRpc(
+      "quiz_adjust_score",
+      {
+        p_room_id: currentRoomId,
+        p_user_id: targetUserId,
+        p_delta: delta
+      },
+      `${displayName}さんの得点を変更しました。`
+    );
+
+    render();
+  }
+);
+
+// --------------------------------------------------
 // 画面描画
 // --------------------------------------------------
 
 function render() {
-  const hasRoom = Boolean(currentRoomId && currentSnapshot);
+  const hasRoom = Boolean(
+    currentRoomId && currentSnapshot
+  );
+
   const snapshot = currentSnapshot;
 
   setBusy(false);
@@ -813,13 +1217,27 @@ function render() {
     resetQuestionButton.disabled = true;
     resetAllButton.disabled = true;
 
+    questionButton.hidden = false;
+    correctButton.hidden = true;
+    incorrectButton.hidden = true;
+    resetQuestionButton.hidden = true;
+    resetAllButton.hidden = true;
+
+    gameSettingsPanel.hidden = true;
+    scoreAdjustmentPanel.hidden = true;
+
+    questionNumberDisplay.hidden = true;
+    gameFinishedMessage.hidden = true;
+
+    timerDisplay.textContent = "0.0秒";
+
     $("#host-label").textContent = "出題者：未設定";
     $("#buzzer-message").textContent =
       "ルーム参加後、出題開始を待ってください";
 
     renderMembers([]);
     renderHistory([]);
-    renderScores([]);
+    renderScores([], []);
 
     return;
   }
@@ -829,66 +1247,231 @@ function render() {
   const history = snapshot.history;
   const scores = snapshot.scores;
 
-  const currentMember = members.find(
-    member => member.user_id === currentUserId
-  );
+  const currentMember = getCurrentMember(snapshot);
+  const isMember = Boolean(currentMember);
+  const isCreator = isRoomCreator(snapshot);
+  const singleSetter = isSingleSetter(snapshot);
+  const canManage = canManageGame(snapshot);
+  const canJudgeCurrent = canJudge(snapshot);
 
-  if (currentMember) usernameInput.value = currentMember.display_name;
+  if (currentMember) {
+    usernameInput.value = currentMember.display_name;
+  }
 
   const isHost = state.host_user_id === currentUserId;
   const active = state.phase === "active";
   const hasAnswer = Boolean(state.current_answer_id);
-  const canStart = state.phase === "ready" || state.phase === "ended";
+  const finished = Boolean(state.game_finished);
 
-  const startedAt = state.question_started_at
-    ? new Date(state.question_started_at).getTime()
-    : null;
+  const canStart =
+    (state.phase === "ready" || state.phase === "ended") &&
+    !finished &&
+    (!singleSetter || isCreator);
 
-  const timedOut =
-    startedAt !== null &&
-    Date.now() - startedAt >= GAME_CONFIG.resetTimeoutMs;
+  const elapsed = getElapsedMilliseconds(state);
+  const timedOut = elapsed >= GAME_CONFIG.resetTimeoutMs;
 
-  const canReset = active && (isHost || timedOut);
-  const isCreator = snapshot.room.created_by === currentUserId;
+  const canReset =
+    active &&
+    !finished &&
+    (
+      singleSetter
+        ? isCreator
+        : isHost || timedOut
+    );
 
-  // 現在のルーム参加者であることも確認する。
-  const isMember = Boolean(currentMember);
-
+  // 早押し
   buzzerButton.disabled = !(
     isMember &&
     active &&
+    !finished &&
     !hasAnswer &&
     !isHost
   );
 
-  questionButton.disabled = !(
+  // 出題開始
+  questionButton.hidden = !(
     isMember &&
-    canStart
+    (!singleSetter || isCreator)
+  );
+
+  questionButton.disabled = !canStart;
+
+  // 判定：everyoneでは出題者本人、single_setterでは作成者。
+  correctButton.hidden = !(
+    isMember && canJudgeCurrent
+  );
+
+  incorrectButton.hidden = !(
+    isMember && canJudgeCurrent
   );
 
   correctButton.disabled = !(
     isMember &&
     active &&
+    !finished &&
     hasAnswer &&
-    isHost
+    canJudgeCurrent
   );
 
+  // 回答者がいない状態でも「正解者なし」として終了可能。
   incorrectButton.disabled = !(
     isMember &&
     active &&
-    hasAnswer &&
-    isHost
+    !finished &&
+    canJudgeCurrent
   );
 
-  resetQuestionButton.disabled = !(
+  incorrectButton.textContent = hasAnswer
+    ? "不正解"
+    : "正解者なし";
+
+  // 問題リセット（ボタン自体は常に表示し、権限や状態に応じて活性/非活性を切り替える）
+  resetQuestionButton.hidden = false;
+  resetQuestionButton.disabled = !canReset;
+
+  // ゲーム全体の初期化は作成者のみ。
+  resetAllButton.hidden = !(
     isMember &&
-    canReset
+    isCreator
   );
 
   resetAllButton.disabled = !(
     isMember &&
     isCreator
   );
+
+// 設定と得点修正は、ゲーム進行中（出題中）でなければ、終了後も変更可能にする。
+  const canEditSettings =
+    isMember &&
+    canManage &&
+    !active;
+
+  // 得点修正は、メンバーであり、かつ管理権限を持つ人（または出題者固定時の出題者）が可能
+  const canAdjustScore = isMember && (canManage || snapshot.room.mode === 'single_setter') && !active;
+
+  gameSettingsPanel.hidden = !canEditSettings;
+  scoreAdjustmentPanel.hidden = !canEditSettings;
+
+  saveGameSettingsButton.disabled = !canEditSettings;
+  applyScoreAdjustmentButton.disabled = !canEditSettings;
+
+  // セレクトボックスの生成は `canAdjustScore` を基準にする
+  if (canAdjustScore) {
+    const scoreMap = new Map();
+
+    // 1. スコア保持者を登録（退出者含む）
+    if (snapshot.scores) {
+      snapshot.scores.forEach(s => {
+        scoreMap.set(s.user_id, {
+          user_id: s.user_id,
+          display_name: s.display_name,
+          score: s.score
+        });
+      });
+    }
+
+    // 2. 現在の参加者メンバーも登録（初期状態用）
+    if (snapshot.members) {
+      snapshot.members.forEach(m => {
+        if (!scoreMap.has(m.user_id)) {
+          scoreMap.set(m.user_id, {
+            user_id: m.user_id,
+            display_name: m.display_name,
+            score: 0
+          });
+        }
+      });
+    }
+
+    let targetPlayers = Array.from(scoreMap.values());
+
+    // 「出題者固定」モードのとき、出題者（created_by）本人の画面では、
+    // セレクトボックスの選択肢から「自分自身（出題者）」を除外する
+    if (snapshot.room.mode === "single_setter" && snapshot.room.created_by === currentUserId) {
+      targetPlayers = targetPlayers.filter(
+        p => p.user_id !== snapshot.room.created_by
+      );
+    }
+
+    // セレクトボックスの選択肢更新
+    const currentSelectedValue = scoreTargetSelect.value;
+    scoreTargetSelect.innerHTML = "";
+
+    if (targetPlayers.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "対象プレイヤーがいません";
+      scoreTargetSelect.appendChild(option);
+    } else {
+      targetPlayers.forEach(p => {
+        const option = document.createElement("option");
+        option.value = p.user_id;
+        option.textContent = `${p.display_name} (${p.score}点)`;
+        scoreTargetSelect.appendChild(option);
+      });
+
+      if (
+        currentSelectedValue &&
+        targetPlayers.some(p => p.user_id === currentSelectedValue)
+      ) {
+        scoreTargetSelect.value = currentSelectedValue;
+      }
+    }
+  }
+
+  // 設定欄は未編集中のときだけサーバー値で更新する。
+  if (document.activeElement !== correctPointsInput) {
+    correctPointsInput.value =
+      String(state.correct_points ?? 1);
+  }
+
+  if (document.activeElement !== incorrectPointsInput) {
+    incorrectPointsInput.value =
+      String(state.incorrect_points ?? 0);
+  }
+
+  if (document.activeElement !== allowNegativeScoresInput) {
+    allowNegativeScoresInput.checked =
+      Boolean(state.allow_negative_scores);
+  }
+
+  if (document.activeElement !== maxQuestionsInput) {
+    maxQuestionsInput.value =
+      state.max_questions == null
+        ? ""
+        : String(state.max_questions);
+  }
+
+  if (document.activeElement !== maxScoreInput) {
+    maxScoreInput.value =
+      state.max_score == null
+        ? ""
+        : String(state.max_score);
+  }
+
+  if (document.activeElement !== showQuestionNumberInput) {
+    showQuestionNumberInput.checked =
+      Boolean(state.show_question_number);
+  }
+
+  // 出題番号
+  questionNumberDisplay.hidden = !(
+    state.show_question_number &&
+    Number(state.question_count) > 0
+  );
+
+  questionNumberDisplay.textContent =
+    `第${state.question_count}問`;
+
+  // 経過時間
+  updateTimerDisplay();
+
+  // ゲーム終了メッセージ
+  gameFinishedMessage.hidden = !finished;
+  gameFinishedMessage.textContent = finished
+    ? state.game_end_message || "ゲーム終了です。"
+    : "";
 
   const host = members.find(
     member => member.user_id === state.host_user_id
@@ -897,12 +1480,15 @@ function render() {
   $("#host-label").textContent =
     `出題者：${host ? host.display_name : "未設定"}`;
 
-  if (state.phase === "ready") {
+  if (finished) {
+    $("#buzzer-message").textContent =
+      "ゲーム終了。新しい問題は開始できません。";
+  } else if (state.phase === "ready") {
     $("#buzzer-message").textContent =
       "出題開始後に回答できます";
   } else if (state.phase === "ended") {
     $("#buzzer-message").textContent =
-      "正解により問題終了。出題者は次の問題を開始できます";
+      "問題終了。次の問題を開始できます";
   } else if (hasAnswer) {
     const answer = history.find(
       item => item.id === state.current_answer_id
@@ -918,8 +1504,44 @@ function render() {
 
   renderMembers(members);
   renderHistory(history, state.current_answer_id);
-  renderScores(scores);
+  renderScores(scores, members);
 }
+
+// --------------------------------------------------
+// タイマー表示
+// --------------------------------------------------
+
+function updateTimerDisplay() {
+  if (!timerDisplay) return;
+
+  const state = currentSnapshot?.state;
+
+  if (!state) {
+    timerDisplay.textContent = "0.0秒";
+    return;
+  }
+
+  const elapsed = getElapsedMilliseconds(state);
+  const tenths = Math.floor(elapsed / 100);
+
+  timerDisplay.textContent =
+    `${(tenths / 10).toFixed(1)}秒`;
+}
+
+function startTimerDisplayLoop() {
+  if (timerIntervalId !== null) {
+    window.clearInterval(timerIntervalId);
+  }
+
+  timerIntervalId = window.setInterval(
+    updateTimerDisplay,
+    100
+  );
+}
+
+// --------------------------------------------------
+// 参加者一覧
+// --------------------------------------------------
 
 function renderMembers(members) {
   const list = $("#member-list");
@@ -958,6 +1580,10 @@ function renderMembers(members) {
   });
 }
 
+// --------------------------------------------------
+// 回答履歴
+// --------------------------------------------------
+
 function renderHistory(history, currentAnswerId = null) {
   const list = $("#history-list");
   list.replaceChildren();
@@ -978,17 +1604,17 @@ function renderHistory(history, currentAnswerId = null) {
       entry.result === "incorrect" ? "incorrect" :
       entry.id === currentAnswerId ? "current" : "";
 
-    const time = new Date(entry.created_at).toLocaleTimeString(
-      "ja-JP",
-      {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      }
-    );
+    const elapsedTenths = entry.elapsed_tenths;
+
+    const elapsedText =
+      elapsedTenths == null
+        ? "—"
+        : `${(Number(elapsedTenths) / 10).toFixed(1)}秒`;
 
     li.append(
-      document.createTextNode(`${entry.display_name}　${time}`)
+      document.createTextNode(
+        `${entry.display_name}　${elapsedText}`
+      )
     );
 
     const result = document.createElement("span");
@@ -1004,13 +1630,29 @@ function renderHistory(history, currentAnswerId = null) {
   });
 }
 
-function renderScores(scores) {
+// --------------------------------------------------
+// 得点一覧・得点修正対象
+// --------------------------------------------------
+
+function renderScores(scores, members = []) {
   const list = $("#score-list");
   list.replaceChildren();
 
-  const entries = [...scores].sort(
+  const snapshot = currentSnapshot;
+  const isSingle = isSingleSetter(snapshot);
+  const creatorId = snapshot?.room.created_by;
+
+  // single_setter モードの場合は作成者をランキングから除外する
+  const filteredScores = scores.filter(entry => {
+    if (isSingle && entry.user_id === creatorId) {
+      return false;
+    }
+    return true;
+  });
+
+  const entries = [...filteredScores].sort(
     (a, b) =>
-      b.score - a.score ||
+      Number(b.score) - Number(a.score) ||
       a.display_name.localeCompare(b.display_name, "ja")
   );
 
@@ -1019,27 +1661,131 @@ function renderScores(scores) {
     li.className = "empty-state";
     li.textContent = "得点はまだありません";
     list.append(li);
+  } else {
+    let currentRank = 1;
+    let currentScore = null;
+    let sameScoreCount = 0;
+
+    entries.forEach((entry, index) => {
+      const score = Number(entry.score) || 0;
+
+      // 順位および同率の判定
+      if (index === 0) {
+        currentRank = 1;
+        currentScore = score;
+        sameScoreCount = 1;
+      } else {
+        if (score === currentScore) {
+          sameScoreCount++;
+        } else {
+          currentRank += sameScoreCount;
+          currentScore = score;
+          sameScoreCount = 1;
+        }
+      }
+
+      // 同率の2人目以降かどうか
+      const isDuplicateScore = (index > 0 && score === entries[index - 1].score);
+
+      const li = document.createElement("li");
+      li.style.display = "flex";
+      li.style.justifyContent = "space-between";
+      li.style.alignItems = "center";
+
+      // 順位表示部分（インデント/幅を固定して位置を揃える）
+      const rankSpan = document.createElement("span");
+      rankSpan.style.display = "inline-block";
+      rankSpan.style.width = "4em"; // 幅を固定してインデントを揃える
+      rankSpan.textContent = isDuplicateScore ? "" : `${currentRank}位`;
+
+      // プレイヤー名
+      const nameSpan = document.createElement("span");
+      nameSpan.style.flexGrow = "1";
+      nameSpan.textContent = entry.display_name;
+
+      // 得点
+      const value = document.createElement("span");
+      value.className = "score-value";
+      value.textContent = `${score}点`;
+
+      li.append(rankSpan, nameSpan, value);
+      list.append(li);
+    });
+  }
+
+  renderScoreTargets(members, scores);
+}
+
+function renderScoreTargets(members, scores) {
+  if (!scoreTargetSelect) return;
+
+  const previousValue = scoreTargetSelect.value;
+  const snapshot = currentSnapshot;
+  const isSingle = isSingleSetter(snapshot);
+  const creatorId = snapshot?.room.created_by;
+
+  // 1. スコア保持者（退出者含む）をマップ化
+  const scoreMap = new Map();
+  if (scores) {
+    scores.forEach(s => {
+      scoreMap.set(s.user_id, {
+        user_id: s.user_id,
+        display_name: s.display_name,
+        score: Number(s.score) || 0
+      });
+    });
+  }
+
+  // 2. 現在のメンバーも追加（まだスコアがない場合用）
+  if (members) {
+    members.forEach(m => {
+      if (!scoreMap.has(m.user_id)) {
+        scoreMap.set(m.user_id, {
+          user_id: m.user_id,
+          display_name: m.display_name,
+          score: 0
+        });
+      }
+    });
+  }
+
+  let targetPlayers = Array.from(scoreMap.values());
+
+  // 3. 「出題者固定」モードのとき、出題者本人の画面であれば出題者自身を除外する
+  if (isSingle && snapshot?.room.created_by === currentUserId) {
+    targetPlayers = targetPlayers.filter(
+      p => p.user_id !== creatorId
+    );
+  }
+
+  scoreTargetSelect.replaceChildren();
+
+  if (targetPlayers.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "対象プレイヤーがいません";
+    scoreTargetSelect.append(option);
     return;
   }
 
-  entries.forEach((entry, index) => {
-    const li = document.createElement("li");
-
-    li.append(
-      document.createTextNode(`${index + 1}位　${entry.display_name}`)
-    );
-
-    const value = document.createElement("span");
-    value.className = "score-value";
-    value.textContent = `${entry.score}点`;
-
-    li.append(value);
-    list.append(li);
+  targetPlayers.forEach(p => {
+    const option = document.createElement("option");
+    option.value = p.user_id;
+    option.textContent = `${p.display_name}（${p.score}点）`;
+    scoreTargetSelect.append(option);
   });
+
+  if (
+    previousValue &&
+    targetPlayers.some(p => p.user_id === previousValue)
+  ) {
+    scoreTargetSelect.value = previousValue;
+  }
 }
 
 // --------------------------------------------------
 // 起動
 // --------------------------------------------------
 
+startTimerDisplayLoop();
 initialize();

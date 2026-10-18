@@ -19,6 +19,35 @@ const SOUND_LIST = {
   ]
 };
 
+const FIXED_SOUND_FILES = {
+  entry: "sounds/entry/default.wav",
+  exit: "sounds/exit/default.wav",
+  config: "sounds/config/default.wav"
+};
+
+const fixedAudioCache = {};
+
+function preloadFixedSounds() {
+  for (const [type, file] of Object.entries(FIXED_SOUND_FILES)) {
+    const audio = new Audio(file);
+    audio.preload = "auto";
+    audio.load();
+    fixedAudioCache[type] = audio;
+  }
+}
+
+function playFixedSound(type) {
+  const audio = fixedAudioCache[type];
+  if (!audio) return;
+
+  audio.pause();
+  audio.currentTime = 0;
+
+  audio.play().catch(error => {
+    console.warn("固定効果音を再生できませんでした:", error);
+  });
+}
+
 const audioSettings = {
   buzzer: 0,
   question: 0,
@@ -75,3 +104,4 @@ function playSound(type) {
 }
 
 preloadSounds();
+preloadFixedSounds();

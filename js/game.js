@@ -8,5 +8,5 @@ const GAME_CONFIG = {
 
 function cleanName(value) {
   const trimmed = String(value || "").trim().slice(0, 20);
-  return trimmed || "名無し";
+  return trimmed || "名無しさん";
 }

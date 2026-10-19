@@ -27,6 +27,7 @@ const gameSettingsPanel = $("#game-settings-panel");
 
 const correctPointsInput = $("#correct-points");
 const incorrectPointsInput = $("#incorrect-points");
+const buzzGuardSecondsInput = $("#buzz-guard-seconds");
 const allowNegativeScoresInput = $("#allow-negative-scores");
 
 const maxQuestionsInput = $("#max-questions");
@@ -728,6 +729,7 @@ function handleSnapshotTransitions(previous, next) {
       oldState.host_user_id !== newState.host_user_id
     )
   ) {
+    questionActiveTimestamp = Date.now(); // ★ここで出題時刻を記録
     playSound("question");
   }
 
@@ -957,7 +959,37 @@ async function callGameRpc(
 // 早押し・出題・判定・リセット
 // --------------------------------------------------
 
+// 出題フェーズに切り替わった時刻を保持する変数
+let questionActiveTimestamp = 0;
+
 buzzerButton.addEventListener("click", async () => {
+  const active = currentSnapshot && currentSnapshot.state.phase === "active";
+  const hasAnswer = Boolean(currentSnapshot?.state?.current_answer_id);
+  const isHost = currentSnapshot?.state?.host_user_id === currentUserId;
+  const isCreator = isRoomCreator(currentSnapshot);
+  const singleSetter = isSingleSetter(currentSnapshot);
+
+  // 出題者、部屋主、または誰かが回答中のときは何もしない
+  if (hasAnswer || isHost || (singleSetter && isCreator)) {
+    return;
+  }
+
+  // 1. 出題中以外（ready, ended, ゲーム終了後など）のときは、試し押し（設定された早押し音を鳴らす）
+  if (!active) {
+    if (typeof triggerBuzzerAnimation === "function") {
+      triggerBuzzerAnimation();
+    }
+    playSound("buzzer"); // ★ playFixedSound ではなく playSound に修正
+    return;
+  }
+
+  // 2. 出題直後のガード時間（設定値に基づいた判定）
+  const guardMs = Number(currentSnapshot?.state?.buzz_guard_seconds ?? 1.0) * 1000;
+  if (Date.now() - questionActiveTimestamp < guardMs) {
+    return;
+  }
+
+  // 3. 通常の早押し処理
   buzzerButton.disabled = true;
 
   await callGameRpc(
@@ -1074,6 +1106,7 @@ saveGameSettingsButton.addEventListener(
 
     const correctPoints = Number(correctPointsInput.value);
     const incorrectPoints = Number(incorrectPointsInput.value);
+    const buzzGuardSeconds = Number(buzzGuardSecondsInput.value);
     const allowNegativeScores = allowNegativeScoresInput.checked;
 
     const maxQuestions = maxQuestionsInput.value.trim() === ""
@@ -1094,6 +1127,11 @@ saveGameSettingsButton.addEventListener(
 
     if (!Number.isInteger(incorrectPoints)) {
       showMessage("不正解時の得点は整数で入力してください（減点の場合は負の値）。");
+      return;
+    }
+
+    if (!Number.isFinite(buzzGuardSeconds) || buzzGuardSeconds < 0 || buzzGuardSeconds > 5) {
+      showMessage("ガード時間は 0〜5秒 の間で設定してください。");
       return;
     }
 
@@ -1140,6 +1178,7 @@ saveGameSettingsButton.addEventListener(
         p_room_id: currentRoomId,
         p_correct_points: correctPoints,
         p_incorrect_points: incorrectPoints,
+        p_buzz_guard_seconds: buzzGuardSeconds,
         p_allow_negative_scores: allowNegativeScores,
         p_max_questions: maxQuestions,
         p_max_score: maxScore,
@@ -1240,9 +1279,9 @@ function render() {
     resetAllButton.disabled = true;
 
     questionButton.hidden = false;
-    correctButton.hidden = true;
-    incorrectButton.hidden = true;
-    resetQuestionButton.hidden = true;
+    correctButton.hidden = false;
+    incorrectButton.hidden = false;
+    resetQuestionButton.hidden = false;
     resetAllButton.hidden = true;
 
     gameSettingsPanel.hidden = true;
@@ -1303,30 +1342,24 @@ function render() {
     );
 
   // 早押し
-  buzzerButton.disabled = !(
-    isMember &&
-    active &&
-    !finished &&
-    !hasAnswer &&
-    !isHost
-  );
+  // ルームに参加していれば、誰かが回答中（hasAnswer）のとき以外はボタンを押せるようにする
+  // 出題者、または出題者固定モードの作成者はボタンを押せない
+  const isSetterOrHost = isHost || (singleSetter && isCreator);
 
-  // 出題開始
-  questionButton.hidden = !(
-    isMember &&
-    (!singleSetter || isCreator)
-  );
+  // 早押しボタンの disabled 判定
+  buzzerButton.disabled = !(isMember && !hasAnswer && !isSetterOrHost);
 
+  // 管理ボタン（出題・正解・不正解・問題リセット）を表示するかどうか
+  // 条件：ルームに参加しており、かつ（「全員モード」または「出題者固定モードの作成者」であること）
+  const canSeeHostControls = isMember && (!singleSetter || isCreator);
+
+  // 出題ボタン
+  questionButton.hidden = !canSeeHostControls;
   questionButton.disabled = !canStart;
 
-  // 判定：everyoneでは出題者本人、single_setterでは作成者。
-  correctButton.hidden = !(
-    isMember && canJudgeCurrent
-  );
-
-  incorrectButton.hidden = !(
-    isMember && canJudgeCurrent
-  );
+  // 正解・不正解ボタンの表示制御
+  correctButton.hidden = !canSeeHostControls;
+  incorrectButton.hidden = !canSeeHostControls;
 
   correctButton.disabled = !(
     isMember &&
@@ -1349,7 +1382,7 @@ function render() {
     : "正解者なし";
 
   // 問題リセット（ボタン自体は常に表示し、権限や状態に応じて活性/非活性を切り替える）
-  resetQuestionButton.hidden = false;
+  resetQuestionButton.hidden = !canSeeHostControls;
   resetQuestionButton.disabled = !canReset;
 
   // ゲーム全体の初期化は作成者のみ。
@@ -1363,7 +1396,7 @@ function render() {
     isCreator
   );
 
-// 設定と得点修正は、ゲーム進行中（出題中）でなければ、終了後も変更可能にする。
+  // 設定と得点修正は、ゲーム進行中（出題中）でなければ、終了後も変更可能にする。
   const canEditSettings =
     isMember &&
     canManage &&
@@ -1476,6 +1509,13 @@ function render() {
     showQuestionNumberInput.checked =
       Boolean(state.show_question_number);
   }
+
+  if (document.activeElement !== buzzGuardSecondsInput) {
+      buzzGuardSecondsInput.value =
+        state.buzz_guard_seconds != null
+          ? String(state.buzz_guard_seconds)
+          : "1.0";
+    }
 
   // 出題番号
   questionNumberDisplay.hidden = !(

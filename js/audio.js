@@ -1,20 +1,27 @@
 const SOUND_LIST = {
   buzzer: [
-    { name: "標準", file: "sounds/buzzer/default.wav" },
-    { name: "音2", file: "sounds/buzzer/sound2.wav" }
+    { name: "標準1", file: "sounds/buzzer/default1.wav" },
+    { name: "標準2", file: "sounds/buzzer/default2.wav" },
+    { name: "チャイム", file: "sounds/buzzer/chime.wav" },
+    { name: "レトロ", file: "sounds/buzzer/retro.wav" }
   ],
   question: [
-    { name: "標準", file: "sounds/question/default.wav" },
+    { name: "標準1", file: "sounds/question/default1.wav" },
+    { name: "標準2", file: "sounds/question/default2.wav" },
     { name: "無音", file: null }
   ],
   correct: [
-    { name: "標準", file: "sounds/correct/default.wav" }
+    { name: "標準1", file: "sounds/correct/default1.wav" },
+    { name: "標準2", file: "sounds/correct/default2.wav" },
+    { name: "ファンファーレ", file: "sounds/correct/fanfare.wav" }
   ],
   incorrect: [
-    { name: "標準", file: "sounds/incorrect/default.wav" }
+    { name: "標準1", file: "sounds/incorrect/default1.wav" },
+    { name: "標準2", file: "sounds/incorrect/default2.wav" }
   ],
   reset: [
-    { name: "標準", file: "sounds/reset/default.wav" },
+    { name: "標準1", file: "sounds/reset/default1.wav" },
+    { name: "標準2", file: "sounds/reset/default2.wav" },
     { name: "無音", file: null }
   ]
 };
@@ -56,6 +63,7 @@ const audioSettings = {
   reset: 0
 };
 
+// audio.js の該当部分
 function populateSoundSelectors() {
   document.querySelectorAll("[data-sound-select]").forEach(select => {
     const type = select.dataset.soundSelect;
@@ -66,12 +74,14 @@ function populateSoundSelectors() {
       option.textContent = item.name;
       select.append(option);
     });
+    
+    // 既存のイベントリスナーに音のテスト再生を追加
     select.addEventListener("change", () => {
       audioSettings[type] = Number(select.value);
+      playSound(type); // ← 変更した瞬間にその音をテスト再生する
     });
   });
 }
-
 const audioCache = {};
 
 function preloadSounds() {
